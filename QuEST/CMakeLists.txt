@@ -11,7 +11,7 @@
 # ----- LIBRARY USER SETTINGS -------------------------------------------------
 # -----------------------------------------------------------------------------
 
-# These variables are cached across multiple calls to cmake. Use cmake -LH for 
+# These variables are cached across multiple calls to cmake. Use cmake -LH for
 # current cache values
 
 # To override, use:
@@ -57,14 +57,14 @@ if (${DISTRIBUTED} AND ${GPUACCELERATED})
 endif()
 
 if ( NOT(${PRECISION} EQUAL 1) AND
-     NOT(${PRECISION} EQUAL 2) AND 
+     NOT(${PRECISION} EQUAL 2) AND
      NOT(${PRECISION} EQUAL 4) )
     message(FATAL_ERROR "PRECISION=${PRECISION} set but valid options for \
         precision are only 1 for single precision, 2 for double precision \
         or 4 for quad precision. Aborting")
 endif()
 
-if ( (${PRECISION} EQUAL 4) AND 
+if ( (${PRECISION} EQUAL 4) AND
         ${GPUACCELERATED} )
     message(FATAL_ERROR "PRECISION=${PRECISION} but quad precision is not \
         supported on GPU. Aborting")
@@ -79,14 +79,14 @@ if (${GPUACCELERATED} AND ${MULTITHREADED})
 endif()
 
 #TODO Add other supported Clang versions if found
-if ( ("${CMAKE_C_COMPILER_ID}" STREQUAL "Clang") AND 
+if ( ("${CMAKE_C_COMPILER_ID}" STREQUAL "Clang") AND
         ${GPUACCELERATED} AND
         NOT("${CMAKE_C_COMPILER_VERSION}" STREQUAL "3.7.0") )
     message(WARNING "Some versions of Clang are not NVIDIA-GPU compatible. \
         If compilation fails, try Clang 3.7.")
 endif()
 
-if ( ${GPUACCELERATED} AND 
+if ( ${GPUACCELERATED} AND
     ("${CMAKE_C_COMPILER_ID}" STREQUAL "GNU") AND
     ("${CMAKE_SYSTEM_NAME}" STREQUAL "DARWIN") ) # DARWIN means Mac OS X
     message(WARNING "On some platforms (e.g. OSX), NVIDIA-GPUs are not \
@@ -111,12 +111,32 @@ endif()
 if (GPUACCELERATED)
     find_package(CUDA REQUIRED)
     # Stop nvcc sending c compile flags through using -Xcompiler and breaking
-    # on compilation of a cpp file receiving -std=c99. In long term should figure 
+    # on compilation of a cpp file receiving -std=c99. In long term should figure
     # out why CMAKE_C_FLAGS and not CMAKE_CXX_FLAGS are being sent through to a cpp file
     set(CUDA_PROPAGATE_HOST_FLAGS FALSE)
 endif()
 
 
+# -----------------------------------------------------------------------------
+# ----- ADD LIBRARY -----------------------------------------------------------
+# -----------------------------------------------------------------------------
+
+
+add_subdirectory(src)
+
+if (GPUACCELERATED)
+    cuda_add_library(QuEST SHARED
+        ${QuEST_SRC}
+    )
+elseif (WIN32)
+    add_library(QuEST STATIC
+        ${QuEST_SRC}
+    )
+else ()
+    add_library(QuEST SHARED
+        ${QuEST_SRC}
+    )
+endif()
 
 # -----------------------------------------------------------------------------
 # ----- SET COMPILER FLAGS ----------------------------------------------------
@@ -139,8 +159,11 @@ if (${MULTITHREADED} AND NOT ${GPUACCELERATED})
       message(WARNING "Found OpenMP ${OpenMP_C_VERSION} but this is too \
              old. Turning OpenMP support OFF.")
     else ()
-      set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
-      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
+        target_compile_options(QuEST
+          PUBLIC
+              $<$<COMPILE_LANGUAGE:C>:${OpenMP_C_FLAGS}>
+              $<$<COMPILE_LANGUAGE:CXX>:${OpenMP_CXX_FLAGS}>
+      )
     endif ()
   endif ()
 
@@ -149,157 +172,41 @@ endif ()
 # ----- CUDA FLAGS ------------------------------------------------------------
 
 if (GPUACCELERATED)
-    set (CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} \
-        -arch=compute_${GPU_COMPUTE_CAPABILITY} -code=sm_${GPU_COMPUTE_CAPABILITY}"
-    )
-    if ("${CMAKE_BUILD_TYPE}" STREQUAL "Release")
-        set (CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} \
-            -O2"
-        )
-    elseif ("${CMAKE_BUILD_TYPE}" STREQUAL "Debug")
-        set (CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} \
-            -G -g -lineinfo"
-        )
-    else()
-        set (CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} \
-            -O2"
-        )
-    endif()
-endif()
-
-
-# ----- C COMPILER FLAGS --------------------------------------------------
-
-# set C flags that are common between compilers and build types
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} \
-    -std=c99"
-)
-
-# Use -O2 for all but debug mode by default 
-if (NOT("${CMAKE_BUILD_TYPE}" STREQUAL "Debug"))
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} \
-        -O2"
+    target_compile_options(QuEST
+        PRIVATE
+            $<$<CONFIG:DEBUG>:-G -lineinfo>
+        PUBLIC
+            -arch=compute_${GPU_COMPUTE_CAPABILITY}
+            -code=sm_${GPU_COMPUTE_CAPABILITY}
     )
 endif()
 
-# Set c flags for release
-set(CMAKE_C_FLAGS_RELEASE 
-    "-O2"
+
+# ----- General FLAGS ---------------------------------------------------------
+
+target_compile_options(QuEST
+    PRIVATE
+        # for DEBUG version
+        $<$<CONFIG:DEBUG>:-O0 -g3>
+        # all warnings when not imported
+        -Wall
+    PUBLIC
+        # optimize for release
+        $<$<CONFIG:RELEASE>:-O2>
+        # when using intel
+        $<$<COMPILE_LANG_AND_ID:C,Intel>:-fprotect-parens -diag-disable cpu-dispatch>
 )
 
-# Set c flags to use in debug mode
-set(CMAKE_C_FLAGS_DEBUG 
-    "-g"
+# set c and cxx standards
+target_compile_features(QuEST
+    PUBLIC
+        c_std_99
+        cxx_std_98
 )
-
-# TODO standardize
-# set C compiler flags based on compiler type
-if ("${CMAKE_C_COMPILER_ID}" STREQUAL "Clang")
-  # using Clang
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} \
-    -mavx -Wall"
-  )
-elseif ("${CMAKE_C_COMPILER_ID}" STREQUAL "GNU")
-  # using GCC
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} \
-    -mavx -Wall"
-  )
-elseif ("${CMAKE_C_COMPILER_ID}" STREQUAL "Intel")
-  # using Intel
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} \
-    -fprotect-parens -Wall -xAVX -axCORE-AVX2 -diag-disable cpu-dispatch"
-  )
-elseif ("${CMAKE_C_COMPILER_ID}" STREQUAL "MSVC")
-  # using Visual Studio
-endif()
-
-# ----- C++ COMPILER FLAGS --------------------------------------------------
-
-# set C++ flags that are common between compilers and build types
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} \
-    -std=c++98 -Wall"
-)
-
-# Use -O2 for all but debug mode by default 
-if (NOT("${CMAKE_BUILD_TYPE}" STREQUAL "Debug"))
-    set(CMAKE_CXX_FLAGS "${CMAKE_C_FLAGS} \
-        -O2"
-    )
-endif()
-
-# Set c++ flags for release
-set(CMAKE_CXX_FLAGS_RELEASE
-    "-O2"
-)
-
-# Set c++ flags to use in debug mode
-set(CMAKE_CXX_FLAGS_DEBUG 
-    "-g"
-)
-
-# set C++ compiler flags based on compiler type
-if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
-  # using Clang
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} \
-    -mavx"
-  )
-elseif ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
-  # using GCC
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} \
-    -mavx"
-  )
-elseif ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Intel")
-  # using Intel
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} \
-    -xAVX -axCORE-AVX2 -diag-disable -cpu-dispatch"
-  )
-elseif ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
-  # using Visual Studio
-endif()
-
-if (VERBOSE_CMAKE)
-    message("-- Compiler flags:")
-    message("   C Compiler ID: ${CMAKE_C_COMPILER_ID}")
-    message("   C++ Compiler ID: ${CMAKE_CXX_COMPILER_ID}")
-    message("   C compilation flags: ${CMAKE_C_FLAGS}")
-    message("   CUDA compilation flags: ${CUDA_NVCC_FLAGS}")
-    message("   C++ compilation flags: ${CMAKE_CXX_FLAGS}")
-
-    message("-- Build type: ${CMAKE_BUILD_TYPE}")
-    if ("${CMAKE_BUILD_TYPE}" STREQUAL "Debug")
-        message("   C debug flags: ${CMAKE_C_FLAGS_DEBUG}")
-        message("   C++ debug flags: ${CMAKE_CXX_FLAGS_DEBUG}")
-    endif()
-    if ("${CMAKE_BUILD_TYPE}" STREQUAL "Release")
-        message("   C release flags: ${CMAKE_CXX_FLAGS_RELEASE}")
-        message("   C++ release flags: ${CMAKE_CXX_FLAGS_RELEASE}")
-    endif()
-endif()
-
-# -----------------------------------------------------------------------------
-# ----- BUILD LIBRARY ---------------------------------------------------------
-# -----------------------------------------------------------------------------
-
-
-add_subdirectory(src)
-
-if (GPUACCELERATED)
-    cuda_add_library(QuEST SHARED
-        ${QuEST_SRC}
-    )
-elseif (WIN32)
-    add_library(QuEST STATIC
-        ${QuEST_SRC}
-    )
-else ()
-    add_library(QuEST SHARED
-        ${QuEST_SRC}
-    )
-endif()
 
 # ----- Location of header files ----------------------------------------------
 
-target_include_directories(QuEST 
+target_include_directories(QuEST
     PRIVATE src
     PUBLIC include
 )
